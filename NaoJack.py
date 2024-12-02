@@ -4,9 +4,24 @@ import time
 
 import cv2
 import numpy as np
+
 from naoqi import ALProxy
 
+import random
+
 suits = ['Clubs', 'Diamonds', 'Hearts', 'Spades']
+
+suits_map = {
+    'Clubs': 'Treboles',
+    'Diamonds': 'Diamantes',
+    'Hearts': 'Corazones',
+    'Spades': 'Picas'
+}
+
+suggestion_map = {
+    'Stand': 'Quedar',
+    'Hit': 'Pedir'
+}
 
 ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 
@@ -26,18 +41,18 @@ values = {
   'A':  11.0
 }
 
-deck_count = 1
+PLAY = 'jugar'
+LOOK = 'ver'
+ASSIST = 'ayudar'
+STAND = 'quedar'
+THANK_YOU = 'gracias'
 
-deck = [(rank, suit) for rank in ranks for suit in suits] * deck_count
+deck_count = 8
 
-global hand
-hand = []
+global deck
+global_deck = [(rank, suit) for rank in ranks for suit in suits] * deck_count
 
-def give_card(card):
-    hand.append(card)
-    deck.remove(card)
-
-def get_hand_value():
+def get_hand_value(hand):
     hand_value = 0
     aces = 0
 
@@ -53,8 +68,53 @@ def get_hand_value():
 
     return hand_value
 
+global hand
+global_hand = []
+
+def give_card(card):
+    global_hand.append(card)
+    global_deck.remove(card)
+
+def get_bust_probability(sims = 1000):
+    bust = 0.0
+    
+    for _ in range(sims):
+        sim_hand = global_hand[:]
+        
+        while True:
+            sim_card = random.choice(global_deck)
+            sim_hand.append(sim_card)
+            sim_value = get_hand_value(sim_hand)
+            
+            if sim_value > 21:
+                bust += 1.0
+                break
+            elif sim_value >= 17:
+                break
+    
+    return bust / sims
+
+def get_hit_probability(sims = 1000):
+    hit = 0.0
+    
+    for _ in range(sims):
+        sim_hand = global_hand[:]
+        
+        while True:
+            sim_card = random.choice(global_deck)
+            sim_hand.append(sim_card)
+            sim_value = get_hand_value(sim_hand)
+            
+            if sim_value == 21:
+                hit += 1.0
+                break
+            elif sim_value >= 17:
+                break
+    
+    return hit / sims
+
 def get_suggestion():
-    value = get_hand_value()
+    value = get_hand_value(global_hand)
 
     if value == 21:
         return 'Stand'
@@ -65,32 +125,19 @@ def get_suggestion():
     if value <= 11:
         return 'Hit'
 
-    suggestion = 'Stand'
+    bust_probability = get_bust_probability()
+    hit_probability = get_hit_probability()
 
-    counts = { rank: 0 for rank in ranks }
+    print("Probabilidad de perder: {}".format(bust_probability))
+    print("Probabilidad de ganar: {}".format(hit_probability))
 
-    chances = { rank: deck_count * 4.0 for rank in ranks }
+    if bust_probability > 0.40:
+        return 'Stand'
+    
+    # if hit_probability > 0.25:
+    #     return 'Hit'
 
-    for rank, _ in deck:
-        counts[rank] += 1
-
-    for rank in ranks:
-        chances[rank] = 4.0 * deck_count - counts[rank]
-
-    if get_low_card_chance(chances) > get_high_card_chance(chances):
-        suggestion = 'Hit'
-
-    return suggestion
-
-def get_low_card_chance(chances):
-    low_cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9']
-
-    return sum([chances[rank] for rank in low_cards])
-
-def get_high_card_chance(chances):
-    high_cards = ['10', 'J', 'Q', 'K']
-
-    return sum([chances[rank] for rank in high_cards])
+    return 'Hit'
 
 def get_card_from_data(data):
     tuple = data.split(" ")
@@ -98,21 +145,9 @@ def get_card_from_data(data):
     suit = tuple[1]
     return (rank, suit)
 
-# # create python module
-# class MyModule(ALModule):
-#   """ Mandatory docstring.
-#       comment needed to create a new python module
-#   """
-
-#   def myCallback(self, key, value, message):
-#     """ Mandatory docstring.
-#         comment needed to create a bound method
-#     """
-#     print(key, value, message)
-
 def main():
     # Replace with the actual IP address of your NAO robot
-    robot_ip = "10.1.138.114" # Change to your NAO's IP address
+    robot_ip = "10.1.138.30" # Change to your NAO's IP address
     robot_port = 9559 # Default port for NAOqi
 
     # Create proxies for the ALTextToSpeech and ALSpeechRecognition services
@@ -122,11 +157,11 @@ def main():
     memory = ALProxy("ALMemory", robot_ip, robot_port)
 
     # Set language for text to speech and speech recognition
-    tts.setLanguage("English")
-    asr.setLanguage("English")
+    tts.setLanguage("Spanish")
+    asr.setLanguage("Spanish")
     
     # Start speech recognition
-    vocabulary = ["Play", "Look", "Assist me", "Thank you", "Stand"]
+    vocabulary = [PLAY, LOOK, ASSIST, THANK_YOU, STAND]
     asr.setVocabulary(vocabulary, True)
 
     # Subscribe to the camera
@@ -140,10 +175,11 @@ def main():
 
     # Start the speech recognition service
     asr.subscribe("NaoJack")
-    tts.say("Now Listening!")
+
+    tts.say("Hola, vamos a jugar!")
 
     try:
-        start(asr, tts, video_proxy, camera_name, qr_detector, memory)
+        start(tts, video_proxy, camera_name, qr_detector, memory)
 
     except KeyboardInterrupt:
         print("Program interrupted by user.")
@@ -153,97 +189,90 @@ def main():
         video_proxy.unsubscribe(camera_name)
         cv2.destroyAllWindows()
 
-def start(asr, tts, video_proxy, camera_name, qr_detector, memory):
-    past_word = ""
+def start(tts, video_proxy, camera_name, qr_detector, memory):
     while True:
         # Wait for the user to say something
         time.sleep(1) # Adjust time as needed
 
         result = memory.getData("WordRecognized")
+
         if result and len(result) > 0 and len(result[0]) > 0:
             recognized_text = result[0][6:-6]
+            confidence = result[1]
             
-            if past_word != recognized_text:
-                print("You said: {}.".format(recognized_text))
-                past_word = recognized_text
+            if confidence > 0.51:
+                print("Confianza: ".format(confidence))
+
+                tts.say("Dijiste {}?".format(recognized_text))
                 
-                # Respond based on the recognized text
-                if recognized_text == "Play":
-                    print("Now playing")
-                    tts.say("Hey! I am ready to assist you.")
+                confirmation = raw_input("Dijiste: {}? ".format(recognized_text))
+                
+                if confirmation == "y":
+                    # Respond based on the recognized text
+                    if recognized_text == PLAY:
+                        tts.say("Hola estoy listo para ayudar")
+                        print("Hola estoy listo para ayudar")
 
-                elif recognized_text == "Look":
-                    time.sleep(2)
-                    print("Now looking")
-                    tts.say("Starting scan.")
-                    # Get a camera image
-                    nao_image = video_proxy.getImageRemote(camera_name)
+                    elif recognized_text == LOOK:
+                        time.sleep(2)
+                        tts.say("Estoy escaneando")
+                        print("Estoy escaneando")
+                        # Get a camera image
+                        nao_image = video_proxy.getImageRemote(camera_name)
 
-                    if nao_image is None:
-                        print("Could not get image from camera.")
-                        continue
+                        if nao_image is None:
+                            print("No puede leer la carta")
+                            tts.say("No puede leer la carta")
+                            continue
 
-                    # Convert the image to a format OpenCV can use
-                    width = nao_image[0]
-                    height = nao_image[1]
-                    print(width, height)
+                        # Convert the image to a format OpenCV can use
+                        width = nao_image[0]
+                        height = nao_image[1]
 
-                    array = np.frombuffer(nao_image[6], dtype=np.uint8)
-                    image = array.reshape((height, width, 3))
+                        array = np.frombuffer(nao_image[6], dtype=np.uint8)
+                        image = array.reshape((height, width, 3))
 
-                    # Convert BGR to RGB
-                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        # Convert BGR to RGB
+                        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-                    # Detect QR codes
-                    # data, _ = qr_detector(image)
-                    data, boundingbox, rectimage = qr_detector.detectAndDecode(image)
-                    print(data, boundingbox, rectimage)
+                        # Detect QR codes
+                        # data, _ = qr_detector(image)
+                        data, _, _ = qr_detector.detectAndDecode(image)
 
-                    if data:
-                        print("QR Code detected: {}".format(data))
-                        tts.say("I found a QR code with data: {}".format(data))
-                        card = get_card_from_data(data)
-                        tts.say("The card is: {} of {}.".format(card[0], card[1]))
-                        give_card(card)
-                    else:
-                        tts.say("No QR code found.")
+                        if data:
+                            card = get_card_from_data(data)
+                            tts.say("La carta es: {} de {}.".format(card[0], suits_map[card[1]]))
+                            print("La carta es: {} de {}.".format(card[0], suits_map[card[1]]))
+                            give_card(card)
+                        else:
+                            tts.say("No encontre un codigo")
+                            print("No encontre un codigo")
 
-                elif recognized_text == "Assist me":
-                    print("Now suggesting")
-                    suggestion = get_suggestion()
+                    elif recognized_text == ASSIST:
+                        tts.say("Estoy pensando")
+                        print("Estoy pensando")
+                        value = get_hand_value(global_hand)
+                        
+                        tts.say("Tu puntaje es {}.".format(value))
+                        print("Tu puntaje es {}.".format(value))
 
-                    if suggestion == 'Bust':
-                        tts.say("I'm sorry, you have lost.")
-                        hand[:] = []
-                    else:
-                        tts.say("This is my suggestion. You should {}.".format(suggestion))
+                        suggestion = get_suggestion()
 
-                elif recognized_text == "Stand":
-                    hand[:] = []
-                    tts.say("You chose to stand. Good luck!")
+                        if suggestion == 'Bust':
+                            tts.say("Lo siento has perdido")
+                            global_hand[:] = []
+                        else:
+                            tts.say("Mi sugerencia es que tienes que {}.".format(suggestion_map[suggestion]))
 
-                elif recognized_text == "Thank you":
-                    print("Now good bye")
-                    tts.say("Goodbye! Have a great day!")
-                    break
+                    elif recognized_text == STAND:
+                        global_hand[:] = []
+                        tts.say("Elegiste quedar. Buena suerte!")
+                        print("Elegiste quedar. Buena suerte!")
 
-def test():
-    print(deck)
-
-    hand.append(deck.pop())
-    print(hand)
-    print(get_hand_value())
-    print(get_suggestion())
-
-    hand.append(deck.pop())
-    print(hand)
-    print(get_hand_value())
-    print(get_suggestion())
-
-    hand.append(deck.pop())
-    print(hand)
-    print(get_hand_value())
-    print(get_suggestion())
+                    elif recognized_text == THANK_YOU:
+                        tts.say("Adios, ten un buen dia")
+                        print("Adios, ten un buen dia")
+                        break
 
 if __name__ == "__main__":
     main()
